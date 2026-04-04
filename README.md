@@ -1,8 +1,11 @@
 # average-handwriting-hid
 
-WacomHID で筆圧・傾き付きの手書きを収集し、フーリエ係数の平均化で「平均手書き文字」を生成する Processing システム。
+USB 接続の Wacom タブレットから WacomHID で筆圧・傾き付きの手書きを収集し、フーリエ係数の平均化で「平均手書き文字」を生成する Processing システム。
 
 [average-figure-processing](https://github.com/nkmr-lab/average-figure-processing) を WacomHID 対応に再構築したもの。
+
+> **対応デバイス**: USB 接続の Wacom タブレット（Wacom One, Intuos Pro 等）専用です。
+> Wacom Movink Pad やモバイルデバイスには対応していません。
 
 ## 機能
 
