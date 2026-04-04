@@ -43,6 +43,10 @@ void setup() {
   size(1200, 900);
   frameRate(60);
 
+  // 日本語フォント（Windowsに入っているメイリオを使用）
+  PFont font = createFont("Meiryo", 32, true);
+  textFont(font);
+
   cfg = new WacomHIDConfig(WACOM_DEVICE);
   pen = new WacomHID(this, cfg);
   pen.connect();
