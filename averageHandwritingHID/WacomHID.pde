@@ -76,26 +76,47 @@ class WacomHID {
   }
 
   // --- HID 接続 ---
+  // Mac で接続が不安定な場合があるため、リトライ付きで初期スキャンを待つ
   boolean connect() {
+    return connect(30, 200);  // 最大30回、200ms 間隔 = 最大6秒待機
+  }
+
+  boolean connect(int maxRetries, int retryIntervalMs) {
     HidServicesSpecification spec = new HidServicesSpecification();
     spec.setAutoShutdown(true);
-    spec.setScanInterval(500);
+    spec.setScanInterval(200);   // 短くしてスキャン頻度を上げる
     spec.setPauseInterval(0);
     spec.setScanMode(ScanMode.SCAN_AT_FIXED_INTERVAL_WITH_PAUSE_AFTER_WRITE);
 
     HidServices hs = HidManager.getHidServices(spec);
-    device = hs.getHidDevice(cfg.VENDOR_ID, cfg.PRODUCT_ID, null);
-    if (device != null) {
-      isConnected = true;
-      println("[WacomHID] Connected: " + device.getProduct()
-        + " (" + cfg.DEVICE_NAME + ")");
-    } else {
-      isConnected = false;
-      println("[WacomHID] Device not found: " + cfg.DEVICE_NAME
-        + " (VID=0x" + hex(cfg.VENDOR_ID, 4)
-        + " PID=0x" + hex(cfg.PRODUCT_ID, 4) + ")");
+    hs.start();  // 明示的にスキャン開始（Mac の初期化遅延対策）
+
+    // 初回スキャンが完了するまで少し待つ（Mac で必須）
+    try { Thread.sleep(500); } catch (InterruptedException e) {}
+
+    // 初期スキャンが完了するまでリトライしながらデバイスを探す
+    for (int attempt = 1; attempt <= maxRetries; attempt++) {
+      device = hs.getHidDevice(cfg.VENDOR_ID, cfg.PRODUCT_ID, null);
+      if (device != null) {
+        isConnected = true;
+        println("[WacomHID] Connected: " + device.getProduct()
+          + " (" + cfg.DEVICE_NAME + ")"
+          + (attempt > 1 ? " [attempt " + attempt + "]" : ""));
+        return true;
+      }
+
+      if (attempt < maxRetries) {
+        try { Thread.sleep(retryIntervalMs); } catch (InterruptedException e) {}
+      }
     }
-    return isConnected;
+
+    isConnected = false;
+    println("[WacomHID] Device not found after " + maxRetries + " attempts: "
+      + cfg.DEVICE_NAME
+      + " (VID=0x" + hex(cfg.VENDOR_ID, 4)
+      + " PID=0x" + hex(cfg.PRODUCT_ID, 4) + ")");
+    println("[WacomHID] Mac の場合: ペンを少し動かしてから再起動すると認識しやすくなります");
+    return false;
   }
 
   // --- 毎フレーム呼ぶ (バッファを全部読み切る) ---
@@ -104,7 +125,14 @@ class WacomHID {
 
     // バッファに溜まったレポートをすべて読み、最新を反映
     while (true) {
-      int read = device.read(buf, 1);
+      int read;
+      try {
+        read = device.read(buf, 1);
+      } catch (Exception e) {
+        println("[WacomHID] read() failed: " + e.getMessage());
+        isConnected = false;
+        return;
+      }
       if (read <= 0) break;
 
       for (int b = 0; b < min(REPORT_SIZE, read); b++) {
