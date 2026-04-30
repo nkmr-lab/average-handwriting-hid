@@ -47,7 +47,7 @@ void setup() {
   PFont font = createFont("Meiryo", 32, true);
   textFont(font);
 
-  cfg = new WacomHIDConfig(WACOM_DEVICE);
+  cfg = new WacomHIDConfig(WACOM_DEVICE, WACOM_LAYOUT);
   pen = new WacomHID(this, cfg);
   pen.connect();
 

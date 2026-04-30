@@ -146,31 +146,44 @@ class WacomHID {
     }
   }
 
-  // --- レポートのデコード ---
+  // --- レポートのデコード (バイト位置は cfg のレイアウト設定を参照) ---
   private void decode() {
     // 座標
-    rawX    = (report[3] << 8) | report[2];
-    rawY    = (report[5] << 8) | report[4];
+    rawX    = (report[cfg.X_HIGH] << 8) | report[cfg.X_LOW];
+    rawY    = (report[cfg.Y_HIGH] << 8) | report[cfg.Y_LOW];
     screenX = map(rawX, 0, cfg.TABLET_X_MAX, 0, app.width);
     screenY = map(rawY, 0, cfg.TABLET_Y_MAX, 0, app.height);
 
     // 筆圧
-    pressure = (report[9] << 8) | report[8];
+    pressure = (report[cfg.PRESSURE_HIGH] << 8) | report[cfg.PRESSURE_LOW];
 
     // 傾き (符号付き 16bit → 度)
-    int rtx = (report[29] << 8) | report[28];
-    int rty = (report[31] << 8) | report[30];
-    tiltX = (rtx > 32767 ? rtx - 65536 : rtx) / 100.0;
-    tiltY = (rty > 32767 ? rty - 65536 : rty) / 100.0;
+    if (cfg.TILT_X_LOW >= 0 && cfg.TILT_X_HIGH >= 0) {
+      int rtx = (report[cfg.TILT_X_HIGH] << 8) | report[cfg.TILT_X_LOW];
+      int rty = (report[cfg.TILT_Y_HIGH] << 8) | report[cfg.TILT_Y_LOW];
+      tiltX = (rtx > 32767 ? rtx - 65536 : rtx) / 100.0;
+      tiltY = (rty > 32767 ? rty - 65536 : rty) / 100.0;
+    } else {
+      tiltX = 0;
+      tiltY = 0;
+    }
 
-    // 距離
-    distance = (report[33] << 8) | report[32];
+    // 距離 (DISTANCE_HIGH = -1 なら 1バイトとして扱う)
+    if (cfg.DISTANCE_LOW >= 0) {
+      if (cfg.DISTANCE_HIGH >= 0) {
+        distance = (report[cfg.DISTANCE_HIGH] << 8) | report[cfg.DISTANCE_LOW];
+      } else {
+        distance = report[cfg.DISTANCE_LOW];
+      }
+    } else {
+      distance = 0;
+    }
 
     // 状態
-    int status = report[1];
-    isOutOfRange = (status == 0x00);
-    isTouching   = (status == 0x21);
-    isHovering   = (status == 0x20);
+    int status = report[cfg.STATUS_BYTE];
+    isOutOfRange = (status == cfg.STATUS_OUT_OF_RANGE);
+    isTouching   = (status == cfg.STATUS_TOUCH);
+    isHovering   = (status == cfg.STATUS_HOVER);
 
     // 距離 mm 換算
     if (isHovering || isTouching) {
