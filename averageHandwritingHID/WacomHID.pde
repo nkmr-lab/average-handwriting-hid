@@ -237,15 +237,8 @@ class WacomHID {
           label = "(no metadata)";
         }
 
-        // open を試みる (戻り値は variable に受けないと Processing でパースエラーになる)
-        boolean opened = false;
-        try {
-          boolean openResult = d.open();
-          opened = openResult;
-        } catch (Exception e) {
-          // 既に open 済みかもしれないので無視して進む
-        }
-
+        // open() は呼ばない (hid4java は read() 時に自動 open する)
+        // 呼ぶと Processing パーサーで Syntax error になる場合がある
         long deadline = millis() + probePerDevice;
         boolean gotData = false;
         int sampleByte = -1;
@@ -254,7 +247,6 @@ class WacomHID {
           try {
             r = d.read(testBuf, 50);
           } catch (Exception e) {
-            // ignore — 次の候補へ
             r = -2;
             break;
           }
@@ -272,10 +264,7 @@ class WacomHID {
           break;
         } else {
           println("[WacomHID]       [" + ci + "] " + label + "  (no data)");
-          // 次の候補のために close
-          if (opened) {
-            try { d.close(); } catch (Exception e) {}
-          }
+          try { d.close(); } catch (Exception e) {}
         }
       }
 
