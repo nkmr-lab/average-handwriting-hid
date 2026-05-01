@@ -133,22 +133,44 @@ class WacomHID {
     try { Thread.sleep(500); } catch (InterruptedException e) {}
 
     // --- 接続中の全HIDデバイスを列挙（デバッグ用）---
+    // 同じ VID/PID で複数インターフェースがあるデバイス (Wacom等) では
+    // interfaceNumber / usagePage / usage を見ないと正しいインターフェースを選べない
     try {
       java.util.List<HidDevice> attached = hs.getAttachedHidDevices();
       println("[WacomHID] [5] Attached HID devices: " + attached.size());
-      int wacomCount = 0;
+      int wacomCount = 0, targetCount = 0;
       for (HidDevice d : attached) {
         boolean isWacom = (d.getVendorId() == cfg.device.VENDOR_ID);
         boolean isTarget = (d.getVendorId() == cfg.device.VENDOR_ID
                          && d.getProductId() == cfg.device.PRODUCT_ID);
         String marker = isTarget ? "  <== TARGET" : (isWacom ? "  (Wacom)" : "");
+        if (isTarget) targetCount++;
+        if (isWacom) wacomCount++;
+
+        // 基本情報
         println("[WacomHID]     VID=0x" + hex(d.getVendorId() & 0xFFFF, 4)
           + " PID=0x" + hex(d.getProductId() & 0xFFFF, 4)
           + "  " + d.getProduct() + marker);
-        if (isWacom) wacomCount++;
+
+        // ターゲット候補は詳細情報も出す (どのインターフェースか判別するため)
+        if (isTarget) {
+          try {
+            println("[WacomHID]         interface=" + d.getInterfaceNumber()
+              + "  usagePage=0x" + hex(d.getUsagePage() & 0xFFFF, 4)
+              + "  usage=0x" + hex(d.getUsage() & 0xFFFF, 4)
+              + "  release=0x" + hex(d.getReleaseNumber() & 0xFFFF, 4));
+            println("[WacomHID]         path=" + d.getPath());
+          } catch (Exception e) {
+            println("[WacomHID]         (extended info unavailable: " + e.getMessage() + ")");
+          }
+        }
       }
       if (wacomCount == 0) {
         println("[WacomHID]     ! No Wacom devices found at all");
+      } else if (targetCount > 1) {
+        println("[WacomHID]     ! Multiple TARGET interfaces (" + targetCount + ") detected.");
+        println("[WacomHID]       hid4java will pick one — may not be the pen interface.");
+        println("[WacomHID]       Look for: usagePage=0x000D (Digitizer) usage=0x0002 (Pen)");
       }
     } catch (Exception e) {
       println("[WacomHID]     enumeration failed: " + e.getMessage());
@@ -168,6 +190,15 @@ class WacomHID {
         println("[WacomHID]   Manufacturer: " + device.getManufacturer());
         println("[WacomHID]   SerialNumber: " + device.getSerialNumber());
         println("[WacomHID]   Path:         " + device.getPath());
+        try {
+          println("[WacomHID]   Interface:    " + device.getInterfaceNumber());
+          println("[WacomHID]   UsagePage:    0x" + hex(device.getUsagePage() & 0xFFFF, 4));
+          println("[WacomHID]   Usage:        0x" + hex(device.getUsage() & 0xFFFF, 4));
+        } catch (Exception e) {
+          println("[WacomHID]   (interface info unavailable)");
+        }
+        println("[WacomHID]   注意: ペンデータが来ない場合、別のインターフェースを掴んでいる可能性");
+        println("[WacomHID]         上の [5] で複数 TARGET が出ていたら usagePage=0x000D, usage=0x0002 のものが正解");
         println("[WacomHID] ========================================");
         isConnected = true;
         return true;
