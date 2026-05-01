@@ -237,11 +237,11 @@ class WacomHID {
           label = "(no metadata)";
         }
 
-        // open を試みる
+        // open を試みる (戻り値は variable に受けないと Processing でパースエラーになる)
         boolean opened = false;
         try {
-          d.open();
-          opened = true;
+          boolean openResult = d.open();
+          opened = openResult;
         } catch (Exception e) {
           // 既に open 済みかもしれないので無視して進む
         }
