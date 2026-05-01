@@ -62,6 +62,7 @@ class WacomHID {
   private HidServices hs;
   private java.util.List<HidDevice> candidates = new java.util.ArrayList<HidDevice>();
   int currentIfaceIdx = -1;   // 候補リスト中の現在使用中インターフェース番号
+  private boolean interfaceConfirmed = false;  // 正常データを受信して動作確認済みか
   private final int BUF_SIZE    = 65;
   private final int REPORT_SIZE = 36;
   private byte[] buf;
@@ -69,6 +70,7 @@ class WacomHID {
   private PrintWriter logWriter;
   private long logStartTime;
   private long logSeq;
+  private final String PREF_FILE = "wacom_iface.json";
 
   // --- コンストラクタ ---
   WacomHID(PApplet app, WacomHIDConfig cfg) {
@@ -182,8 +184,45 @@ class WacomHID {
     candidates = WacomHIDProbe.findCandidates(hs, cfg.device.VENDOR_ID, cfg.device.PRODUCT_ID);
     println("[WacomHID] [6] Candidate interfaces: " + candidates.size());
 
-    // --- リトライしながら getHidDevice() で1個取得 ---
-    println("[WacomHID] [7] Looking up target device (max " + maxRetries
+    // --- 保存済みの「動作確認済みインターフェース」があれば優先で開く ---
+    JSONObject pref = loadPreferredInterface();
+    if (pref != null && candidates.size() > 0) {
+      int prefIface = pref.getInt("interfaceNumber", -999);
+      int prefUP    = pref.getInt("usagePage",      -999);
+      int prefU     = pref.getInt("usage",          -999);
+      println("[WacomHID] [7a] Preferred interface from " + PREF_FILE + ":");
+      println("[WacomHID]      iface=" + prefIface
+        + " usagePage=0x" + hex(prefUP & 0xFFFF, 4)
+        + " usage=0x" + hex(prefU & 0xFFFF, 4));
+      for (int i = 0; i < candidates.size(); i++) {
+        HidDevice c = candidates.get(i);
+        try {
+          if (c.getInterfaceNumber() == prefIface
+              && (c.getUsagePage() & 0xFFFF) == (prefUP & 0xFFFF)
+              && (c.getUsage()     & 0xFFFF) == (prefU  & 0xFFFF)) {
+            boolean ok = WacomHIDProbe.openDevice(c);
+            if (ok) {
+              device = c;
+              currentIfaceIdx = i;
+              long elapsed = millis() - t0;
+              println("[WacomHID] [7a]   matched candidate " + (i + 1)
+                + " (elapsed " + elapsed + "ms)");
+              printConnectedInfo();
+              isConnected = true;
+              return true;
+            } else {
+              println("[WacomHID] [7a]   matched but open() failed, falling back");
+            }
+          }
+        } catch (Exception e) {
+          // metadata access failed; skip
+        }
+      }
+      println("[WacomHID] [7a]   no candidate matched preference, falling back");
+    }
+
+    // --- フォールバック: getHidDevice() で1個取得 ---
+    println("[WacomHID] [7b] Looking up target device (max " + maxRetries
       + " retries x " + retryIntervalMs + "ms = "
       + (maxRetries * retryIntervalMs / 1000.0) + "s)");
     for (int attempt = 1; attempt <= maxRetries; attempt++) {
@@ -221,6 +260,55 @@ class WacomHID {
     return false;
   }
 
+  // ============================================================
+  // 動作確認済みインターフェースの保存・読込
+  // ============================================================
+  // ファイル形式: { "WacomOne12": { "interfaceNumber": 0, "usagePage": 13, "usage": 2 }, ... }
+
+  private JSONObject loadAllPreferences() {
+    String path = app.sketchPath(PREF_FILE);
+    java.io.File f = new java.io.File(path);
+    if (!f.exists()) return null;
+    try {
+      return app.loadJSONObject(path);
+    } catch (Exception e) {
+      println("[WacomHID] preference file load failed: " + e.getMessage());
+      return null;
+    }
+  }
+
+  private JSONObject loadPreferredInterface() {
+    JSONObject all = loadAllPreferences();
+    if (all == null) return null;
+    String key = cfg.device.NAME;
+    if (!all.hasKey(key)) return null;
+    return all.getJSONObject(key);
+  }
+
+  private void savePreferredInterface() {
+    if (device == null) return;
+    try {
+      JSONObject all = loadAllPreferences();
+      if (all == null) all = new JSONObject();
+      JSONObject entry = new JSONObject();
+      entry.setInt("interfaceNumber", device.getInterfaceNumber());
+      entry.setInt("usagePage",       device.getUsagePage() & 0xFFFF);
+      entry.setInt("usage",           device.getUsage() & 0xFFFF);
+      entry.setString("savedAt",      "" + new java.util.Date());
+      all.setJSONObject(cfg.device.NAME, entry);
+      app.saveJSONObject(all, app.sketchPath(PREF_FILE));
+      println("[WacomHID] saved working interface to " + PREF_FILE
+        + " (iface=" + device.getInterfaceNumber()
+        + " usagePage=0x" + hex(device.getUsagePage() & 0xFFFF, 4)
+        + " usage=0x" + hex(device.getUsage() & 0xFFFF, 4) + ")");
+    } catch (Exception e) {
+      println("[WacomHID] preference file save failed: " + e.getMessage());
+    }
+  }
+
+  // 接続済みインターフェースが動作確認済みか
+  boolean isInterfaceConfirmed() { return interfaceConfirmed; }
+
   // --- 接続成功時の情報出力 ---
   private void printConnectedInfo() {
     if (device == null) return;
@@ -254,6 +342,8 @@ class WacomHID {
     if (device != null) {
       WacomHIDProbe.closeDevice(device);
     }
+    // 切替後は再度動作確認 → 保存待ち状態に戻す
+    interfaceConfirmed = false;
 
     // 次の候補を開く (失敗したらさらに次)
     int n = candidates.size();
@@ -316,6 +406,15 @@ class WacomHID {
         report[b] = buf[b] & 0xFF;
       }
       decode();
+
+      // 正常なペンレポート (status バイトが想定値) を初めて受信したら、
+      // 現在のインターフェースを「動作確認済み」として保存する
+      if (!interfaceConfirmed) {
+        if (isOutOfRange || isHovering || isTouching) {
+          interfaceConfirmed = true;
+          savePreferredInterface();
+        }
+      }
 
       if (isLogging && logWriter != null) {
         writeLogLine();
