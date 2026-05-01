@@ -176,40 +176,134 @@ class WacomHID {
       println("[WacomHID]     enumeration failed: " + e.getMessage());
     }
 
-    // --- リトライしながらデバイスを探す ---
-    println("[WacomHID] [6] Looking up target device (max " + maxRetries
-      + " retries x " + retryIntervalMs + "ms = "
-      + (maxRetries * retryIntervalMs / 1000.0) + "s)");
+    // --- 候補インターフェース全部を probe してデータが来るやつを採用 ---
+    println("[WacomHID] [6] Looking up target device + probing for active interface");
+    println("[WacomHID]     ペンをタブレット近くで動かしてください");
+
+    HidDevice winner = null;
     for (int attempt = 1; attempt <= maxRetries; attempt++) {
-      device = hs.getHidDevice(cfg.device.VENDOR_ID, cfg.device.PRODUCT_ID, null);
-      if (device != null) {
-        long elapsed = millis() - t0;
-        println("[WacomHID]     attempt " + attempt + ": FOUND  (elapsed " + elapsed + "ms)");
-        println("[WacomHID] ----------------------------------------");
-        println("[WacomHID] Connected: " + device.getProduct() + " (" + cfg.device.NAME + ")");
-        println("[WacomHID]   Manufacturer: " + device.getManufacturer());
-        println("[WacomHID]   SerialNumber: " + device.getSerialNumber());
-        println("[WacomHID]   Path:         " + device.getPath());
-        try {
-          println("[WacomHID]   Interface:    " + device.getInterfaceNumber());
-          println("[WacomHID]   UsagePage:    0x" + hex(device.getUsagePage() & 0xFFFF, 4));
-          println("[WacomHID]   Usage:        0x" + hex(device.getUsage() & 0xFFFF, 4));
-        } catch (Exception e) {
-          println("[WacomHID]   (interface info unavailable)");
+      // VID/PID マッチする候補を全部集める
+      java.util.List<HidDevice> candidates = new java.util.ArrayList<HidDevice>();
+      try {
+        for (HidDevice d : hs.getAttachedHidDevices()) {
+          if (d.getVendorId() == cfg.device.VENDOR_ID
+              && d.getProductId() == cfg.device.PRODUCT_ID) {
+            candidates.add(d);
+          }
         }
-        println("[WacomHID]   注意: ペンデータが来ない場合、別のインターフェースを掴んでいる可能性");
-        println("[WacomHID]         上の [5] で複数 TARGET が出ていたら usagePage=0x000D, usage=0x0002 のものが正解");
-        println("[WacomHID] ========================================");
-        isConnected = true;
-        return true;
+      } catch (Exception e) {
+        println("[WacomHID]     enumeration error: " + e.getMessage());
       }
-      if (attempt % 5 == 0) {
-        println("[WacomHID]     attempt " + attempt + ": not yet... (elapsed "
-          + (millis() - t0) + "ms)");
+
+      if (candidates.size() == 0) {
+        if (attempt % 5 == 0) {
+          println("[WacomHID]     attempt " + attempt + ": no candidates yet... (elapsed "
+            + (millis() - t0) + "ms)");
+        }
+        if (attempt < maxRetries) {
+          try { Thread.sleep(retryIntervalMs); } catch (InterruptedException e) {}
+        }
+        continue;
       }
+
+      // HID標準 Pen (usagePage=0x000D, usage=0x0002) を優先順位の先頭に置く
+      java.util.List<HidDevice> ordered = new java.util.ArrayList<HidDevice>();
+      for (HidDevice d : candidates) {
+        try {
+          if ((d.getUsagePage() & 0xFFFF) == 0x000D && (d.getUsage() & 0xFFFF) == 0x0002) {
+            ordered.add(0, d);
+          } else {
+            ordered.add(d);
+          }
+        } catch (Exception e) {
+          ordered.add(d);
+        }
+      }
+
+      println("[WacomHID]     attempt " + attempt + ": " + ordered.size()
+        + " candidate interface(s), probing each for data...");
+
+      // 各候補を順番に probe
+      byte[] testBuf = new byte[BUF_SIZE];
+      int probePerDevice = 400;  // 1個あたりの probe 時間 (ms)
+      for (int ci = 0; ci < ordered.size(); ci++) {
+        HidDevice d = ordered.get(ci);
+        String label;
+        try {
+          label = "iface=" + d.getInterfaceNumber()
+            + " usagePage=0x" + hex(d.getUsagePage() & 0xFFFF, 4)
+            + " usage=0x" + hex(d.getUsage() & 0xFFFF, 4);
+        } catch (Exception e) {
+          label = "(no metadata)";
+        }
+
+        // open を試みる
+        boolean opened = false;
+        try {
+          d.open();
+          opened = true;
+        } catch (Exception e) {
+          // 既に open 済みかもしれないので無視して進む
+        }
+
+        long deadline = millis() + probePerDevice;
+        boolean gotData = false;
+        int sampleByte = -1;
+        while (millis() < deadline) {
+          int r = -1;
+          try {
+            r = d.read(testBuf, 50);
+          } catch (Exception e) {
+            // ignore — 次の候補へ
+            r = -2;
+            break;
+          }
+          if (r > 0) {
+            gotData = true;
+            sampleByte = testBuf[0] & 0xFF;
+            break;
+          }
+        }
+
+        if (gotData) {
+          println("[WacomHID]       [" + ci + "] " + label
+            + "  ==> DATA RECEIVED (reportId=0x" + hex(sampleByte, 2) + ") ✓");
+          winner = d;
+          break;
+        } else {
+          println("[WacomHID]       [" + ci + "] " + label + "  (no data)");
+          // 次の候補のために close
+          if (opened) {
+            try { d.close(); } catch (Exception e) {}
+          }
+        }
+      }
+
+      if (winner != null) break;
       if (attempt < maxRetries) {
         try { Thread.sleep(retryIntervalMs); } catch (InterruptedException e) {}
       }
+    }
+
+    if (winner != null) {
+      device = winner;
+      long elapsed = millis() - t0;
+      println("[WacomHID] ----------------------------------------");
+      println("[WacomHID] Connected: " + device.getProduct() + " (" + cfg.device.NAME + ")");
+      println("[WacomHID]   Manufacturer: " + device.getManufacturer());
+      println("[WacomHID]   SerialNumber: " + device.getSerialNumber());
+      println("[WacomHID]   Path:         " + device.getPath());
+      try {
+        println("[WacomHID]   Interface:    " + device.getInterfaceNumber());
+        println("[WacomHID]   UsagePage:    0x" + hex(device.getUsagePage() & 0xFFFF, 4));
+        println("[WacomHID]   Usage:        0x" + hex(device.getUsage() & 0xFFFF, 4));
+      } catch (Exception e) {
+        println("[WacomHID]   (interface info unavailable)");
+      }
+      println("[WacomHID]   Elapsed:      " + elapsed + "ms");
+      println("[WacomHID] ========================================");
+      isConnected = true;
+      return true;
     }
 
     isConnected = false;
