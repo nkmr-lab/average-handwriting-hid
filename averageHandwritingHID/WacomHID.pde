@@ -82,40 +82,117 @@ class WacomHID {
   }
 
   boolean connect(int maxRetries, int retryIntervalMs) {
+    long t0 = millis();
+
+    println("[WacomHID] ========================================");
+    println("[WacomHID] Connection start");
+    println("[WacomHID] OS:        " + System.getProperty("os.name")
+      + " " + System.getProperty("os.version")
+      + " (" + System.getProperty("os.arch") + ")");
+    println("[WacomHID] Java:      " + System.getProperty("java.version"));
+    println("[WacomHID] Target:    " + cfg.device.NAME
+      + " (VID=0x" + hex(cfg.device.VENDOR_ID, 4)
+      + " PID=0x" + hex(cfg.device.PRODUCT_ID, 4) + ")");
+    println("[WacomHID] Layout:    " + cfg.layout.NAME);
+    println("[WacomHID] ----------------------------------------");
+
+    // --- HidServices の準備 ---
+    println("[WacomHID] [1] Creating HidServicesSpecification...");
     HidServicesSpecification spec = new HidServicesSpecification();
     spec.setAutoShutdown(true);
-    spec.setScanInterval(200);   // 短くしてスキャン頻度を上げる
+    spec.setScanInterval(200);
     spec.setPauseInterval(0);
     spec.setScanMode(ScanMode.SCAN_AT_FIXED_INTERVAL_WITH_PAUSE_AFTER_WRITE);
+    println("[WacomHID]     scanInterval=200ms, autoShutdown=true");
 
-    HidServices hs = HidManager.getHidServices(spec);
-    hs.start();  // 明示的にスキャン開始（Mac の初期化遅延対策）
+    println("[WacomHID] [2] Getting HidServices instance...");
+    HidServices hs;
+    try {
+      hs = HidManager.getHidServices(spec);
+      println("[WacomHID]     OK");
+    } catch (Exception e) {
+      println("[WacomHID]     FAILED: " + e.getClass().getSimpleName() + " — " + e.getMessage());
+      e.printStackTrace();
+      isConnected = false;
+      return false;
+    }
 
-    // 初回スキャンが完了するまで少し待つ（Mac で必須）
+    println("[WacomHID] [3] Starting HidServices (hs.start())...");
+    try {
+      hs.start();
+      println("[WacomHID]     OK");
+    } catch (Exception e) {
+      println("[WacomHID]     FAILED: " + e.getClass().getSimpleName() + " — " + e.getMessage());
+      e.printStackTrace();
+      isConnected = false;
+      return false;
+    }
+
+    // --- 初回スキャン待機 ---
+    println("[WacomHID] [4] Waiting 500ms for initial HID scan...");
     try { Thread.sleep(500); } catch (InterruptedException e) {}
 
-    // 初期スキャンが完了するまでリトライしながらデバイスを探す
+    // --- 接続中の全HIDデバイスを列挙（デバッグ用）---
+    try {
+      java.util.List<HidDevice> attached = hs.getAttachedHidDevices();
+      println("[WacomHID] [5] Attached HID devices: " + attached.size());
+      int wacomCount = 0;
+      for (HidDevice d : attached) {
+        boolean isWacom = (d.getVendorId() == cfg.device.VENDOR_ID);
+        boolean isTarget = (d.getVendorId() == cfg.device.VENDOR_ID
+                         && d.getProductId() == cfg.device.PRODUCT_ID);
+        String marker = isTarget ? "  <== TARGET" : (isWacom ? "  (Wacom)" : "");
+        println("[WacomHID]     VID=0x" + hex(d.getVendorId() & 0xFFFF, 4)
+          + " PID=0x" + hex(d.getProductId() & 0xFFFF, 4)
+          + "  " + d.getProduct() + marker);
+        if (isWacom) wacomCount++;
+      }
+      if (wacomCount == 0) {
+        println("[WacomHID]     ! No Wacom devices found at all");
+      }
+    } catch (Exception e) {
+      println("[WacomHID]     enumeration failed: " + e.getMessage());
+    }
+
+    // --- リトライしながらデバイスを探す ---
+    println("[WacomHID] [6] Looking up target device (max " + maxRetries
+      + " retries x " + retryIntervalMs + "ms = "
+      + (maxRetries * retryIntervalMs / 1000.0) + "s)");
     for (int attempt = 1; attempt <= maxRetries; attempt++) {
-      device = hs.getHidDevice(cfg.VENDOR_ID, cfg.PRODUCT_ID, null);
+      device = hs.getHidDevice(cfg.device.VENDOR_ID, cfg.device.PRODUCT_ID, null);
       if (device != null) {
+        long elapsed = millis() - t0;
+        println("[WacomHID]     attempt " + attempt + ": FOUND  (elapsed " + elapsed + "ms)");
+        println("[WacomHID] ----------------------------------------");
+        println("[WacomHID] Connected: " + device.getProduct() + " (" + cfg.device.NAME + ")");
+        println("[WacomHID]   Manufacturer: " + device.getManufacturer());
+        println("[WacomHID]   SerialNumber: " + device.getSerialNumber());
+        println("[WacomHID]   Path:         " + device.getPath());
+        println("[WacomHID] ========================================");
         isConnected = true;
-        println("[WacomHID] Connected: " + device.getProduct()
-          + " (" + cfg.DEVICE_NAME + ")"
-          + (attempt > 1 ? " [attempt " + attempt + "]" : ""));
         return true;
       }
-
+      if (attempt % 5 == 0) {
+        println("[WacomHID]     attempt " + attempt + ": not yet... (elapsed "
+          + (millis() - t0) + "ms)");
+      }
       if (attempt < maxRetries) {
         try { Thread.sleep(retryIntervalMs); } catch (InterruptedException e) {}
       }
     }
 
     isConnected = false;
-    println("[WacomHID] Device not found after " + maxRetries + " attempts: "
-      + cfg.DEVICE_NAME
-      + " (VID=0x" + hex(cfg.VENDOR_ID, 4)
-      + " PID=0x" + hex(cfg.PRODUCT_ID, 4) + ")");
-    println("[WacomHID] Mac の場合: ペンを少し動かしてから再起動すると認識しやすくなります");
+    long elapsed = millis() - t0;
+    println("[WacomHID] ----------------------------------------");
+    println("[WacomHID] FAILED after " + maxRetries + " attempts (" + elapsed + "ms)");
+    println("[WacomHID]   Target: " + cfg.device.NAME
+      + " (VID=0x" + hex(cfg.device.VENDOR_ID, 4)
+      + " PID=0x" + hex(cfg.device.PRODUCT_ID, 4) + ")");
+    println("[WacomHID]   Tip (Mac):");
+    println("[WacomHID]    - Wacom Desktop Center / 関連プロセスが先にデバイスを掴んでいる可能性");
+    println("[WacomHID]    - System Settings > Privacy & Security > Input Monitoring を確認");
+    println("[WacomHID]    - USB を抜き挿し or ペンを動かしてから再起動");
+    println("[WacomHID] ========================================");
     return false;
   }
 
@@ -149,18 +226,18 @@ class WacomHID {
   // --- レポートのデコード (バイト位置は cfg のレイアウト設定を参照) ---
   private void decode() {
     // 座標
-    rawX    = (report[cfg.X_HIGH] << 8) | report[cfg.X_LOW];
-    rawY    = (report[cfg.Y_HIGH] << 8) | report[cfg.Y_LOW];
-    screenX = map(rawX, 0, cfg.TABLET_X_MAX, 0, app.width);
-    screenY = map(rawY, 0, cfg.TABLET_Y_MAX, 0, app.height);
+    rawX    = (report[cfg.layout.X_HIGH] << 8) | report[cfg.layout.X_LOW];
+    rawY    = (report[cfg.layout.Y_HIGH] << 8) | report[cfg.layout.Y_LOW];
+    screenX = map(rawX, 0, cfg.device.TABLET_X_MAX, 0, app.width);
+    screenY = map(rawY, 0, cfg.device.TABLET_Y_MAX, 0, app.height);
 
     // 筆圧
-    pressure = (report[cfg.PRESSURE_HIGH] << 8) | report[cfg.PRESSURE_LOW];
+    pressure = (report[cfg.layout.PRESSURE_HIGH] << 8) | report[cfg.layout.PRESSURE_LOW];
 
     // 傾き (符号付き 16bit → 度)
-    if (cfg.TILT_X_LOW >= 0 && cfg.TILT_X_HIGH >= 0) {
-      int rtx = (report[cfg.TILT_X_HIGH] << 8) | report[cfg.TILT_X_LOW];
-      int rty = (report[cfg.TILT_Y_HIGH] << 8) | report[cfg.TILT_Y_LOW];
+    if (cfg.layout.TILT_X_LOW >= 0 && cfg.layout.TILT_X_HIGH >= 0) {
+      int rtx = (report[cfg.layout.TILT_X_HIGH] << 8) | report[cfg.layout.TILT_X_LOW];
+      int rty = (report[cfg.layout.TILT_Y_HIGH] << 8) | report[cfg.layout.TILT_Y_LOW];
       tiltX = (rtx > 32767 ? rtx - 65536 : rtx) / 100.0;
       tiltY = (rty > 32767 ? rty - 65536 : rty) / 100.0;
     } else {
@@ -169,29 +246,29 @@ class WacomHID {
     }
 
     // 距離 (DISTANCE_HIGH = -1 なら 1バイトとして扱う)
-    if (cfg.DISTANCE_LOW >= 0) {
-      if (cfg.DISTANCE_HIGH >= 0) {
-        distance = (report[cfg.DISTANCE_HIGH] << 8) | report[cfg.DISTANCE_LOW];
+    if (cfg.layout.DISTANCE_LOW >= 0) {
+      if (cfg.layout.DISTANCE_HIGH >= 0) {
+        distance = (report[cfg.layout.DISTANCE_HIGH] << 8) | report[cfg.layout.DISTANCE_LOW];
       } else {
-        distance = report[cfg.DISTANCE_LOW];
+        distance = report[cfg.layout.DISTANCE_LOW];
       }
     } else {
       distance = 0;
     }
 
     // 状態
-    int status = report[cfg.STATUS_BYTE];
-    isOutOfRange = (status == cfg.STATUS_OUT_OF_RANGE);
-    isTouching   = (status == cfg.STATUS_TOUCH);
-    isHovering   = (status == cfg.STATUS_HOVER);
+    int status = report[cfg.layout.STATUS_BYTE];
+    isOutOfRange = (status == cfg.layout.STATUS_OUT_OF_RANGE);
+    isTouching   = (status == cfg.layout.STATUS_TOUCH);
+    isHovering   = (status == cfg.layout.STATUS_HOVER);
 
     // 距離 mm 換算
     if (isHovering || isTouching) {
-      distanceMm = map(distance, cfg.DIST_RAW_MIN, cfg.DIST_RAW_MAX,
-                        cfg.DIST_MM_MAX, 0.0);
-      distanceMm = constrain(distanceMm, 0, cfg.DIST_MM_MAX);
+      distanceMm = map(distance, cfg.device.DIST_RAW_MIN, cfg.device.DIST_RAW_MAX,
+                        cfg.device.DIST_MM_MAX, 0.0);
+      distanceMm = constrain(distanceMm, 0, cfg.device.DIST_MM_MAX);
     } else {
-      distanceMm = cfg.DIST_MM_MAX;
+      distanceMm = cfg.device.DIST_MM_MAX;
     }
   }
 
